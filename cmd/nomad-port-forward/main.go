@@ -39,6 +39,7 @@ func main() {
 	portMap := flag.String("p", "8080:80", "port mapping local_port:<remote_addr(optional)>:remote_port")
 	installScript := flag.String("install", DEFUALT_INSTALL_SCRIPT, "install script to run before starting socat")
 	allocID := flag.String("alloc-id", "", "alloc id to forward ports for")
+
 	flag.Parse()
 
 	portMapParts := strings.Split(*portMap, ":")
@@ -50,6 +51,7 @@ func main() {
 		log.Fatalf("-alloc-id is required")
 	}
 
+	localAddr := "localhost"
 	remoteAddr := "localhost"
 	localPort := portMapParts[0]
 	remotePort := portMapParts[1]
@@ -77,8 +79,9 @@ func main() {
 		return
 	}
 	log.Print("Install complete")
+	log.Printf("forwarding local port %s to %s:%s", localPort, remoteAddr, remotePort)
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%s", "localhost", localPort))
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%s", localAddr, localPort))
 	if err != nil {
 		log.Fatalf("failed to create local listener: %v", err)
 	}
