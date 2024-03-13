@@ -63,11 +63,9 @@ func main() {
 
 	installCmd := []string{"/bin/sh", "-c", *installScript}
 
-	// Create a no-op reader.
 	reader := NoOpReader{}
 	writer := os.Stdout
 
-	// Combine them into an io.ReadWriter.
 	readWriter := struct {
 		io.Reader
 		io.Writer
