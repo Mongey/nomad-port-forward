@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	_ "embed"
 	"flag"
 	"fmt"
 	"io"
@@ -11,88 +13,114 @@ import (
 	"strings"
 )
 
-func runNomadCommand(conn io.ReadWriter, task, allocID string, execcmd ...string) error {
+//go:embed embed/tcpfwd-linux-amd64
+var tcpfwdAmd64 []byte
+
+//go:embed embed/tcpfwd-linux-arm64
+var tcpfwdArm64 []byte
+
+func runNomadCommand(stdin io.Reader, stdout io.Writer, task, allocID string, execcmd ...string) error {
 	baseCommands := []string{"alloc", "exec", "-i", "-t=false", fmt.Sprintf("-task=%s", task), allocID}
 	cmds := append(baseCommands, execcmd...)
 
 	log.Printf("running command: nomad %s", strings.Join(cmds, " "))
 	cmd := exec.Command("nomad", cmds...)
 
-	cmd.Stdin = conn
-	cmd.Stdout = conn
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
 }
 
-type NoOpReader struct{}
-
-func (n NoOpReader) Read(p []byte) (int, error) {
-	return len(p), nil
+func mapArch(uname string) (string, error) {
+	arch := strings.TrimSpace(uname)
+	switch arch {
+	case "x86_64":
+		return "amd64", nil
+	case "aarch64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("unsupported architecture: %s", arch)
+	}
 }
 
-const DEFAULT_INSTALL_SCRIPT = `command -v socat >/dev/null 2>&1 || {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update && apt-get install -y socat
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache socat
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y socat
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y socat
-  else
-    echo "error: no supported package manager found to install socat" >&2
-    exit 1
-  fi
-}`
+func detectArch(task, allocID string) (string, error) {
+	var buf bytes.Buffer
+	err := runNomadCommand(nil, &buf, task, allocID, "uname", "-m")
+	if err != nil {
+		return "", fmt.Errorf("failed to detect arch: %w", err)
+	}
+
+	return mapArch(buf.String())
+}
+
+func uploadBinary(task, allocID, arch string) error {
+	var bin []byte
+	switch arch {
+	case "amd64":
+		bin = tcpfwdAmd64
+	case "arm64":
+		bin = tcpfwdArm64
+	default:
+		return fmt.Errorf("unsupported architecture: %s", arch)
+	}
+
+	return runNomadCommand(
+		bytes.NewReader(bin),
+		os.Stdout,
+		task, allocID,
+		"/bin/sh", "-c", "cat > /tmp/tcpfwd && chmod +x /tmp/tcpfwd",
+	)
+}
+
+func parsePortMap(s string) (localPort, remoteAddr, remotePort string, err error) {
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return "", "", "", fmt.Errorf("expected >1 parts (local_port:remote_addr:remote_port) for -p flag, given %d", len(parts))
+	}
+
+	localPort = parts[0]
+	remoteAddr = "localhost"
+	remotePort = parts[1]
+
+	if len(parts) == 3 {
+		remoteAddr = parts[1]
+		remotePort = parts[2]
+	}
+	return localPort, remoteAddr, remotePort, nil
+}
 
 func main() {
 	task := flag.String("task", "", "task name if alloc contains multiple")
-	socatPath := flag.String("socat-path", "/usr/bin/socat", "path to socat binary in task")
 	portMap := flag.String("p", "8080:80", "port mapping local_port:<remote_addr(optional)>:remote_port")
-	installScript := flag.String("install", DEFAULT_INSTALL_SCRIPT, "install script to run before starting socat")
 	allocID := flag.String("alloc-id", "", "alloc id to forward ports for")
 
 	flag.Parse()
 
-	portMapParts := strings.Split(*portMap, ":")
-
-	if len(portMapParts) < 2 {
-		log.Fatalf("expected >1 parts (local_port:remote_addr:remote_port) for -p flag, given %d", len(portMapParts))
+	localPort, remoteAddr, remotePort, err := parsePortMap(*portMap)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 	if len(*allocID) == 0 {
 		log.Fatalf("-alloc-id is required")
 	}
 
-	localAddr := "localhost"
-	remoteAddr := "localhost"
-	localPort := portMapParts[0]
-	remotePort := portMapParts[1]
-
-	if len(portMapParts) == 3 {
-		remoteAddr = portMapParts[1]
-		remotePort = portMapParts[2]
-	}
-
-	installCmd := []string{"/bin/sh", "-c", *installScript}
-
-	reader := NoOpReader{}
-	writer := os.Stdout
-
-	readWriter := struct {
-		io.Reader
-		io.Writer
-	}{reader, writer}
-
-	err := runNomadCommand(readWriter, *task, *allocID, installCmd...)
+	arch, err := detectArch(*task, *allocID)
 	if err != nil {
-		log.Printf("nomad exec install command error: %v", err)
-		return
+		log.Fatalf("failed to detect architecture: %v", err)
 	}
-	log.Print("Install complete")
+	log.Printf("detected architecture: %s", arch)
+
+	err = uploadBinary(*task, *allocID, arch)
+	if err != nil {
+		log.Fatalf("failed to upload tcpfwd binary: %v", err)
+	}
+	log.Print("tcpfwd binary uploaded")
+
 	log.Printf("forwarding local port %s to %s:%s", localPort, remoteAddr, remotePort)
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%s", localAddr, localPort))
+	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%s", localPort))
 	if err != nil {
 		log.Fatalf("failed to create local listener: %v", err)
 	}
@@ -110,13 +138,12 @@ func main() {
 			defer conn.Close()
 			defer log.Printf("closed connection: %v", conn.RemoteAddr())
 
-			soCatCmd := []string{
-				*socatPath,
-				"-",
-				fmt.Sprintf("TCP4:%s:%s", remoteAddr, remotePort),
+			tcpfwdCmd := []string{
+				"/tmp/tcpfwd",
+				fmt.Sprintf("%s:%s", remoteAddr, remotePort),
 			}
 
-			err = runNomadCommand(conn, *task, *allocID, soCatCmd...)
+			err = runNomadCommand(conn, conn, *task, *allocID, tcpfwdCmd...)
 			if err != nil {
 				log.Printf("nomad exec command error: %v", err)
 				return

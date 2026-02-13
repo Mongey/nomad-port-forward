@@ -1,2 +1,2 @@
-
 dist/
+cmd/nomad-port-forward/embed/
