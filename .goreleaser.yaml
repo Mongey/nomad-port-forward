@@ -39,6 +39,14 @@ archives:
       - goos: windows
         format: zip
 
+brews:
+  - repository:
+      owner: Mongey
+      name: homebrew-tap
+    homepage: https://github.com/Mongey/nomad-port-forward
+    description: Forward ports from a Nomad job to a local machine
+    license: MIT
+
 changelog:
   sort: asc
   filters:

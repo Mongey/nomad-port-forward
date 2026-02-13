@@ -31,13 +31,26 @@ func (n NoOpReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-const DEFUALT_INSTALL_SCRIPT = `command -v socat &> /dev/null || (apt-get update && apt-get install -y socat)`
+const DEFAULT_INSTALL_SCRIPT = `command -v socat >/dev/null 2>&1 || {
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y socat
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache socat
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y socat
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y socat
+  else
+    echo "error: no supported package manager found to install socat" >&2
+    exit 1
+  fi
+}`
 
 func main() {
 	task := flag.String("task", "", "task name if alloc contains multiple")
 	socatPath := flag.String("socat-path", "/usr/bin/socat", "path to socat binary in task")
 	portMap := flag.String("p", "8080:80", "port mapping local_port:<remote_addr(optional)>:remote_port")
-	installScript := flag.String("install", DEFUALT_INSTALL_SCRIPT, "install script to run before starting socat")
+	installScript := flag.String("install", DEFAULT_INSTALL_SCRIPT, "install script to run before starting socat")
 	allocID := flag.String("alloc-id", "", "alloc id to forward ports for")
 
 	flag.Parse()
