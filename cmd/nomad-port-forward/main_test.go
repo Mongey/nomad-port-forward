@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os/exec"
 	"runtime"
@@ -114,15 +113,13 @@ func TestTcpfwdInContainer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.Background()
+			ctx := t.Context()
 
 			c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-				ContainerRequest: testcontainers.ContainerRequest{
-					Image:      tt.image,
-					Cmd:        []string{"/bin/sh", "-c", "sleep 300"},
-					WaitingFor: wait.ForExec([]string{"/bin/sh", "-c", "true"}),
-				},
-				Started: true,
+				Image:      tt.image,
+				Cmd:        []string{"/bin/sh", "-c", "sleep 300"},
+				WaitingFor: wait.ForExec([]string{"/bin/sh", "-c", "true"}),
+				Started:    true,
 			})
 			testcontainers.CleanupContainer(t, c)
 			if err != nil {
@@ -158,7 +155,7 @@ func TestTcpfwdInContainer(t *testing.T) {
 
 			// Wait for echo server to be ready by polling the port
 			exitCode = 1
-			for i := 0; i < 20; i++ {
+			for range 20 {
 				exitCode, _, _ = c.Exec(ctx, []string{"/bin/sh", "-c", "cat < /dev/null > /dev/tcp/localhost/7777 2>/dev/null || (echo | /tmp/tcpfwd localhost:7777 2>/dev/null && true) || false"})
 				if exitCode == 0 {
 					break
